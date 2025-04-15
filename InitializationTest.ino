@@ -24,7 +24,7 @@
 #define YP A3
 #define YM A0
 
-TouchScreen ts = TouchScreen(XP, YP, XM, YM, 480);
+TouchScreen ts = TouchScreen(XP, YP, XM, YM, 480);  // Resistance from multimeter
 
 // --- Touchscreen Calibration ---
 #define TS_MINX 70
@@ -35,7 +35,7 @@ TouchScreen ts = TouchScreen(XP, YP, XM, YM, 480);
 #define SCREEN_WIDTH_MM 130
 #define SCREEN_HEIGHT_MM 172
 
-// --- Stepper Setup ---
+// --- Stepper Settings ---
 #define STEPS_PER_REV 400
 #define MAX_MOTOR_SPEED 300
 #define MOTOR_ACCELERATION 100
@@ -54,6 +54,7 @@ void setup() {
   Serial.begin(9600);
   Serial.println("Ball Balancer setup started...");
 
+  // Motor setup
   stepperA.setMaxSpeed(MAX_MOTOR_SPEED);
   stepperB.setMaxSpeed(MAX_MOTOR_SPEED);
   stepperC.setMaxSpeed(MAX_MOTOR_SPEED);
@@ -66,15 +67,16 @@ void setup() {
   steppers.addStepper(stepperB);
   steppers.addStepper(stepperC);
 
-  // Slight lift to get platform off base
+  // Raise platform slightly
   long initialLift[3] = {100, 100, 100};
   steppers.moveTo(initialLift);
   steppers.runSpeedToPosition();
 
-  Serial.println("Platform lifted. Tap the screen to begin...");
+  Serial.println("Platform lifted. Tap the screen to begin tracking...");
 }
 
 void loop() {
+  // Wait for user tap to start
   if (!systemReady) {
     TSPoint p = ts.getPoint();
 
@@ -89,11 +91,42 @@ void loop() {
       initialOffset[2] = stepperC.currentPosition();
 
       systemReady = true;
-      Serial.println("Touch detected. Ready to begin control...");
+      Serial.println("Touch detected. Starting position tracking...");
     }
-
     return;
   }
 
-  // Control logic not yet implemented here
+  // --- Ball Position Tracking Only ---
+  int x_mm = 0;
+  int y_mm = 0;
+
+  getBallPosition(x_mm, y_mm);
+
+  if (x_mm != 0 || y_mm != 0) {
+    Serial.print("Ball X: ");
+    Serial.print(x_mm);
+    Serial.print(" mm | Y: ");
+    Serial.print(y_mm);
+    Serial.println(" mm");
+  }
+
+  delay(100);
+}
+
+// --- Ball Position Reader Function ---
+void getBallPosition(int &x_mm, int &y_mm) {
+  TSPoint p = ts.getPoint();
+
+  pinMode(XP, OUTPUT);
+  pinMode(XM, OUTPUT);
+  pinMode(YP, OUTPUT);
+  pinMode(YM, OUTPUT);
+
+  if (p.z > 10) {
+    x_mm = map(p.x, TS_MINX, TS_MAXX, 0, SCREEN_WIDTH_MM);
+    y_mm = map(p.y, TS_MINY, TS_MAXY, 0, SCREEN_HEIGHT_MM);
+  } else {
+    x_mm = 0;
+    y_mm = 0;
+  }
 }
