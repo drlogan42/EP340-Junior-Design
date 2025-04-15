@@ -130,15 +130,7 @@ float tiltY = computePID(errorY, lastErrorY, integralY, dt);
 long motorTargets[3];
 computeInverseKinematics(tiltX, tiltY, motorTargets);
 
-// --- Print Target Motor Steps ---
-Serial.print("Target A: ");
-Serial.print(motorTargets[0]);
-Serial.print(" | B: ");
-Serial.print(motorTargets[1]);
-Serial.print(" | C: ");
-Serial.println(motorTargets[2]);
-
-// --- Debug Output Only ---
+// PRINT POSITION, ERROR, PID FIRST
 Serial.print("Ball X: ");
 Serial.print(x_mm);
 Serial.print(" mm | Y: ");
@@ -152,6 +144,13 @@ Serial.print(tiltX);
 Serial.print(" | PID Y: ");
 Serial.println(tiltY);
 
+// THEN PRINT TARGETS
+Serial.print("Target A: ");
+Serial.print(motorTargets[0]);
+Serial.print(" | B: ");
+Serial.print(motorTargets[1]);
+Serial.print(" | C: ");
+Serial.println(motorTargets[2]);
 //output example
 //Ball X: 56 mm | Y: 90 mm || Error X: 9.00 | Error Y: -4.00 || PID X: 18.00 | PID Y: -15.81
 //Target A: -261 | B: 1101 | C: 461
