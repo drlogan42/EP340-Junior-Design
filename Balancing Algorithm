@@ -36,8 +36,8 @@ TouchScreen ts = TouchScreen(XP, YP, XM, YM, 480);
 #define SCREEN_HEIGHT_MM 172
 
 // === Stepper and Control Constants ===
-#define STEPS_PER_REV 400
-#define MAX_MOTOR_SPEED 800
+#define STEPS_PER_REV 1200
+#define MAX_MOTOR_SPEED 1000
 #define MOTOR_ACCELERATION 300
 
 AccelStepper stepperA(AccelStepper::HALF4WIRE, MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_IN3, MOTOR_A_IN4);
@@ -47,7 +47,7 @@ AccelStepper stepperC(AccelStepper::HALF4WIRE, MOTOR_C_IN1, MOTOR_C_IN2, MOTOR_C
 MultiStepper steppers;
 
 // === PID Parameters ===
-float kp = -1000;
+float kp = -2000;
 float ki = 0.1;
 float kd = 0.5;
 
@@ -76,7 +76,7 @@ void setup() {
   steppers.addStepper(stepperB);
   steppers.addStepper(stepperC);
 
-  long initialLift[3] = {100, 100, 100};
+  long initialLift[3] = {50, 50, 50};
   steppers.moveTo(initialLift);
   steppers.runSpeedToPosition();
 
@@ -118,11 +118,15 @@ void loop() {
   static unsigned long lastUpdate = 0;
   if (millis() - lastUpdate > 100) {
     computeInverseKinematics(tiltX, tiltY, motorTargets);
-    steppers.moveTo(motorTargets);
+    stepperA.moveTo(motorTargets[0]);
+    stepperB.moveTo(motorTargets[1]);
+    stepperC.moveTo(motorTargets[2]);
     lastUpdate = millis();
   }
 
-  steppers.run();
+  stepperA.run();
+  stepperB.run();
+  stepperC.run();
 
   Serial.print("Ball X: "); Serial.print(x_mm);
   Serial.print(" | Y: "); Serial.print(y_mm);
@@ -162,7 +166,7 @@ void computeInverseKinematics(float tiltX, float tiltY, long targets[3]) {
   float z1 = -cos60 * tiltX + sin60 * tiltY;
   float z2 = tiltX;
   float z3 = -cos60 * tiltX - sin60 * tiltY;
-  float scale = 10.0;
+  float scale = 30.0;
   targets[0] = initialOffset[0] + z1 * scale;
   targets[1] = initialOffset[1] + z2 * scale;
   targets[2] = initialOffset[2] + z3 * scale;
