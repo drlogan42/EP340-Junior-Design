@@ -1,8 +1,9 @@
+
 #include <AccelStepper.h>
 #include <MultiStepper.h>
 #include <TouchScreen.h>
 
-// --- Motor Pins ---
+// === Pin Definitions ===
 #define MOTOR_A_IN1  2
 #define MOTOR_A_IN2  3
 #define MOTOR_A_IN3  4
@@ -18,15 +19,14 @@
 #define MOTOR_C_IN3 12
 #define MOTOR_C_IN4 13
 
-// --- Touchscreen Pins ---
 #define XP A1
 #define XM A2
 #define YP A3
 #define YM A0
 
-TouchScreen ts = TouchScreen(XP, YP, XM, YM, 480);  // Resistance from multimeter
+TouchScreen ts = TouchScreen(XP, YP, XM, YM, 480);
 
-// --- Touchscreen Calibration ---
+// === Calibration ===
 #define TS_MINX 70
 #define TS_MAXX 510
 #define TS_MINY 470
@@ -35,10 +35,10 @@ TouchScreen ts = TouchScreen(XP, YP, XM, YM, 480);  // Resistance from multimete
 #define SCREEN_WIDTH_MM 130
 #define SCREEN_HEIGHT_MM 172
 
-// --- Stepper Settings ---
+// === Stepper and Control Constants ===
 #define STEPS_PER_REV 400
-#define MAX_MOTOR_SPEED 300
-#define MOTOR_ACCELERATION 100
+#define MAX_MOTOR_SPEED 800
+#define MOTOR_ACCELERATION 300
 
 AccelStepper stepperA(AccelStepper::HALF4WIRE, MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_IN3, MOTOR_A_IN4);
 AccelStepper stepperB(AccelStepper::HALF4WIRE, MOTOR_B_IN1, MOTOR_B_IN2, MOTOR_B_IN3, MOTOR_B_IN4);
@@ -46,25 +46,24 @@ AccelStepper stepperC(AccelStepper::HALF4WIRE, MOTOR_C_IN1, MOTOR_C_IN2, MOTOR_C
 
 MultiStepper steppers;
 
-// --- Initialization State ---
-bool systemReady = false;
-long initialOffset[3] = {0, 0, 0};
-
-// PID Constants
-float kp = 2.0;
-float ki = 0.0;
+// === PID Parameters ===
+float kp = -1000;
+float ki = 0.1;
 float kd = 0.5;
 
 float lastErrorX = 0, lastErrorY = 0;
 float integralX = 0, integralY = 0;
 unsigned long lastTime = 0;
 
-//SETUP
+// === System State ===
+bool systemReady = false;
+long initialOffset[3] = {0, 0, 0};
+long motorTargets[3] = {0, 0, 0};
+
 void setup() {
   Serial.begin(9600);
   Serial.println("Ball Balancer setup started...");
 
-  // Motor setup
   stepperA.setMaxSpeed(MAX_MOTOR_SPEED);
   stepperB.setMaxSpeed(MAX_MOTOR_SPEED);
   stepperC.setMaxSpeed(MAX_MOTOR_SPEED);
@@ -77,108 +76,70 @@ void setup() {
   steppers.addStepper(stepperB);
   steppers.addStepper(stepperC);
 
-  // Raise platform slightly
   long initialLift[3] = {100, 100, 100};
   steppers.moveTo(initialLift);
   steppers.runSpeedToPosition();
 
-  Serial.println("Platform lifted. Tap the screen to begin tracking...");
+  Serial.println("Platform lifted. Tap the screen to begin...");
 }
 
-//LOOP
 void loop() {
-  // Wait for user tap to start
   if (!systemReady) {
     TSPoint p = ts.getPoint();
-
-    pinMode(XP, OUTPUT);
-    pinMode(XM, OUTPUT);
-    pinMode(YP, OUTPUT);
-    pinMode(YM, OUTPUT);
-
+    pinMode(XP, OUTPUT); pinMode(XM, OUTPUT); pinMode(YP, OUTPUT); pinMode(YM, OUTPUT);
     if (p.z > 10) {
       initialOffset[0] = stepperA.currentPosition();
       initialOffset[1] = stepperB.currentPosition();
       initialOffset[2] = stepperC.currentPosition();
-
       systemReady = true;
-      Serial.println("Touch detected. Starting position tracking...");
+      lastTime = millis();
+      Serial.println("Touch detected. Starting control loop...");
     }
     return;
   }
 
-// --- Ball Position Tracking ---
-int x_mm = 0, y_mm = 0;
-getBallPosition(x_mm, y_mm);
+  int x_mm = 0, y_mm = 0;
+  getBallPosition(x_mm, y_mm);
+  if (x_mm == 0 && y_mm == 0) return;
 
-if (x_mm == 0 && y_mm == 0) return;  // No touch
+  float errorX = (SCREEN_WIDTH_MM / 2.0) - x_mm;
+  float errorY = (SCREEN_HEIGHT_MM / 2.0) - y_mm;
 
-// --- Compute Error from center ---
-float errorX = (SCREEN_WIDTH_MM / 2.0) - x_mm;
-float errorY = (SCREEN_HEIGHT_MM / 2.0) - y_mm;
+  unsigned long now = millis();
+  float dt = (now - lastTime) / 1000.0;
+  lastTime = now;
 
-// --- Time delta ---
-unsigned long now = millis();
-float dt = (now - lastTime) / 1000.0;
-lastTime = now;
+  float tiltX = computePID(errorX, lastErrorX, integralX, dt);
+  float tiltY = computePID(errorY, lastErrorY, integralY, dt);
 
-// --- PID Output: Target tilt angle ---
-float tiltX = computePID(errorX, lastErrorX, integralX, dt);
-float tiltY = computePID(errorY, lastErrorY, integralY, dt);
+  tiltX = constrain(tiltX, -30, 30);
+  tiltY = constrain(tiltY, -30, 30);
 
-// --- Inverse Kinematics (Placeholder) ---
-long motorTargets[3];
-computeInverseKinematics(tiltX, tiltY, motorTargets);
+  static unsigned long lastUpdate = 0;
+  if (millis() - lastUpdate > 100) {
+    computeInverseKinematics(tiltX, tiltY, motorTargets);
+    steppers.moveTo(motorTargets);
+    lastUpdate = millis();
+  }
 
-// PRINT POSITION, ERROR, PID FIRST
-Serial.print("Ball X: ");
-Serial.print(x_mm);
-Serial.print(" mm | Y: ");
-Serial.print(y_mm);
-Serial.print(" mm || Error X: ");
-Serial.print(errorX);
-Serial.print(" | Error Y: ");
-Serial.print(errorY);
-Serial.print(" || PID X: ");
-Serial.print(tiltX);
-Serial.print(" | PID Y: ");
-Serial.println(tiltY);
+  steppers.run();
 
-// THEN PRINT TARGETS
-Serial.print("Target A: ");
-Serial.print(motorTargets[0]);
-Serial.print(" | B: ");
-Serial.print(motorTargets[1]);
-Serial.print(" | C: ");
-Serial.println(motorTargets[2]);
-//output example
-//Ball X: 56 mm | Y: 90 mm || Error X: 9.00 | Error Y: -4.00 || PID X: 18.00 | PID Y: -15.81
-//Target A: -261 | B: 1101 | C: 461
-//Error is how far ball is from center of each axis
-//PID is amount of tilt needed to bring ball back to center
+  Serial.print("Ball X: "); Serial.print(x_mm);
+  Serial.print(" | Y: "); Serial.print(y_mm);
+  Serial.print(" || Error X: "); Serial.print(errorX);
+  Serial.print(" | Error Y: "); Serial.print(errorY);
+  Serial.print(" || PID X: "); Serial.print(tiltX);
+  Serial.print(" | PID Y: "); Serial.println(tiltY);
+  Serial.print("Target A: "); Serial.print(motorTargets[0]);
+  Serial.print(" | B: "); Serial.print(motorTargets[1]);
+  Serial.print(" | C: "); Serial.println(motorTargets[2]);
 
-steppers.moveTo(motorTargets);
-steppers.runSpeedToPosition();  // Blocking until position is reached
-
-//Debug Step
-Serial.print("Stepper A Pos: ");
-Serial.print(stepperA.currentPosition());
-Serial.print(" | B: ");
-Serial.print(stepperB.currentPosition());
-Serial.print(" | C: ");
-Serial.println(stepperC.currentPosition());
-
+ // delay(10);
 }
 
-// --- Ball Position Reader Function ---
 void getBallPosition(int &x_mm, int &y_mm) {
   TSPoint p = ts.getPoint();
-
-  pinMode(XP, OUTPUT);
-  pinMode(XM, OUTPUT);
-  pinMode(YP, OUTPUT);
-  pinMode(YM, OUTPUT);
-
+  pinMode(XP, OUTPUT); pinMode(XM, OUTPUT); pinMode(YP, OUTPUT); pinMode(YM, OUTPUT);
   if (p.z > 10) {
     x_mm = map(p.x, TS_MINX, TS_MAXX, 0, SCREEN_WIDTH_MM);
     y_mm = map(p.y, TS_MINY, TS_MAXY, 0, SCREEN_HEIGHT_MM);
@@ -188,7 +149,6 @@ void getBallPosition(int &x_mm, int &y_mm) {
   }
 }
 
-//Compute PID
 float computePID(float error, float &lastError, float &integral, float dt) {
   integral += error * dt;
   float derivative = (error - lastError) / dt;
@@ -196,12 +156,14 @@ float computePID(float error, float &lastError, float &integral, float dt) {
   return (kp * error) + (ki * integral) + (kd * derivative);
 }
 
-//Inverse Kinematics
 void computeInverseKinematics(float tiltX, float tiltY, long targets[3]) {
-  targets[0] = initialOffset[0] + tiltX * 10;  // Motor A
-  targets[1] = initialOffset[1] + tiltY * 10;  // Motor B
-  targets[2] = initialOffset[2] - tiltX * 10;  // Motor C (example setup)
+  const float cos60 = 0.5;
+  const float sin60 = 0.866;
+  float z1 = -cos60 * tiltX + sin60 * tiltY;
+  float z2 = tiltX;
+  float z3 = -cos60 * tiltX - sin60 * tiltY;
+  float scale = 10.0;
+  targets[0] = initialOffset[0] + z1 * scale;
+  targets[1] = initialOffset[1] + z2 * scale;
+  targets[2] = initialOffset[2] + z3 * scale;
 }
-
-
-
