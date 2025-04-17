@@ -1,173 +1,147 @@
-
+//Included Libraries
 #include <AccelStepper.h>
+#include <InverseKinematics.h>
 #include <MultiStepper.h>
+#include <stdint.h>
 #include <TouchScreen.h>
+#include <math.h>
 
-// === Pin Definitions ===
-#define MOTOR_A_IN1  2
-#define MOTOR_A_IN2  3
-#define MOTOR_A_IN3  4
-#define MOTOR_A_IN4  5
-
-#define MOTOR_B_IN1  6
-#define MOTOR_B_IN2  7
-#define MOTOR_B_IN3  8
-#define MOTOR_B_IN4  9
-
-#define MOTOR_C_IN1 10
-#define MOTOR_C_IN2 11
-#define MOTOR_C_IN3 12
-#define MOTOR_C_IN4 13
-
+//Pins for TouchScreen
 #define XP A1
 #define XM A2
 #define YP A3
 #define YM A0
 
+//Maps dimensions of 3RPS Parallel Manipulator to arms
+Machine machine(2, 3.125, 1.75, 3.669291339); 
+
+//Initalize TouchScreen
 TouchScreen ts = TouchScreen(XP, YP, XM, YM, 480);
 
-// === Calibration ===
-#define TS_MINX 70
-#define TS_MAXX 510
-#define TS_MINY 470
-#define TS_MAXY 930
+//Stepper Motor Definitions (using TMC2208 step/dir drivers)
+AccelStepper stepperA(AccelStepper::DRIVER, 2, 3);  // STEP, DIR
+AccelStepper stepperB(AccelStepper::DRIVER, 4, 5);
+AccelStepper stepperC(AccelStepper::DRIVER, 6, 7);
 
-#define SCREEN_WIDTH_MM 130
-#define SCREEN_HEIGHT_MM 172
+// Grouping for synchronized movement using MultiStepper
+MultiStepper steppers;          
 
-// === Stepper and Control Constants ===
-#define STEPS_PER_REV 1200
-#define MAX_MOTOR_SPEED 1000
-#define MOTOR_ACCELERATION 300
+//Motion and Control Variables
+long pos[3];   // Array to store the target positions for each stepper motor
+int ENA = 0;   //Enable pin for drivers (LOW = enabled, HIGH = disabled)
+double angOrig = 190;    //Inital angle of each leg (degrees)
+double speed[3] = { 0, 0, 0 }, speedPrev[3], ks = 25;  //the speed of the stepper motor and the speed amplifying constant
 
-AccelStepper stepperA(AccelStepper::HALF4WIRE, MOTOR_A_IN1, MOTOR_A_IN2, MOTOR_A_IN3, MOTOR_A_IN4);
-AccelStepper stepperB(AccelStepper::HALF4WIRE, MOTOR_B_IN1, MOTOR_B_IN2, MOTOR_B_IN3, MOTOR_B_IN4);
-AccelStepper stepperC(AccelStepper::HALF4WIRE, MOTOR_C_IN1, MOTOR_C_IN2, MOTOR_C_IN3, MOTOR_C_IN4);
+//Touch Screen Variables
+double Xoffset = 500;  //X offset for the center position of the touchpad
+double Yoffset = 500;  //Y offset for the center position of the touchpad
 
-MultiStepper steppers;
+//PID variables
+double kp = 1E-7 , ki = 3E-4, kd = 150;
 
-// === PID Parameters ===
-float kp = -2000;
-float ki = 0.1;
-float kd = 0.5;
+//PID for both axes
+double error[2] = { 0, 0 }, errorPrev[2], integr[2] = { 0, 0 }, deriv[2] = { 0, 0 }, out[2];  //PID terms for X and Y directions
+long timeI;                                                                           //variables to capture initial times
 
-float lastErrorX = 0, lastErrorY = 0;
-float integralX = 0, integralY = 0;
-unsigned long lastTime = 0;
-
-// === System State ===
-bool systemReady = false;
-long initialOffset[3] = {0, 0, 0};
-long motorTargets[3] = {0, 0, 0};
+//More Platform Constants
+double angToStep = 3200 / 360;  //Steps per degree (based on 3200 microsteps/rev)
+bool detected = 0;              //Ball detection flag
 
 void setup() {
-  Serial.begin(9600);
-  Serial.println("Ball Balancer setup started...");
-
-  stepperA.setMaxSpeed(MAX_MOTOR_SPEED);
-  stepperB.setMaxSpeed(MAX_MOTOR_SPEED);
-  stepperC.setMaxSpeed(MAX_MOTOR_SPEED);
-
-  stepperA.setAcceleration(MOTOR_ACCELERATION);
-  stepperB.setAcceleration(MOTOR_ACCELERATION);
-  stepperC.setAcceleration(MOTOR_ACCELERATION);
-
+  Serial.begin(115200);
+  // Add stepper motors to multi-stepper controller
   steppers.addStepper(stepperA);
   steppers.addStepper(stepperB);
   steppers.addStepper(stepperC);
-
-  long initialLift[3] = {50, 50, 50};
-  steppers.moveTo(initialLift);
-  steppers.runSpeedToPosition();
-
-  Serial.println("Platform lifted. Tap the screen to begin...");
+  // Setup driver enable pin
+  pinMode(ENA, OUTPUT);           //define enable pin as output
+  digitalWrite(ENA, HIGH);        //sets the drivers off initially
+  delay(1000);                    //small delay to allow the user to reset the platform
+  digitalWrite(ENA, LOW);         //sets the drivers on
+  moveTo(4.25, 0, 0);             //moves the platform to the home position
+  steppers.runSpeedToPosition();  //blocks until the platform is at the home position
 }
-
 void loop() {
-  if (!systemReady) {
-    TSPoint p = ts.getPoint();
-    pinMode(XP, OUTPUT); pinMode(XM, OUTPUT); pinMode(YP, OUTPUT); pinMode(YM, OUTPUT);
-    if (p.z > 10) {
-      initialOffset[0] = stepperA.currentPosition();
-      initialOffset[1] = stepperB.currentPosition();
-      initialOffset[2] = stepperC.currentPosition();
-      systemReady = true;
-      lastTime = millis();
-      Serial.println("Touch detected. Starting control loop...");
+  PID(0, 0);  // Run PID control loop targeting center of the screen
+}
+//moves/positions the platform with the given parameters
+void moveTo(double hz, double nx, double ny) {
+  //if the ball has been detected
+  if (detected) {
+    //calculates stepper motor positon
+    for (int i = 0; i < 3; i++) {
+      pos[i] = round((angOrig - machine.theta(i, hz, nx, ny)) * angToStep);
     }
-    return;
+    //sets calculated speed
+    stepperA.setMaxSpeed(speed[A]);
+    stepperB.setMaxSpeed(speed[B]);
+    stepperC.setMaxSpeed(speed[C]);
+    //sets acceleration to be proportional to speed
+    stepperA.setAcceleration(speed[A] * 25);
+    stepperB.setAcceleration(speed[B] * 25);
+    stepperC.setAcceleration(speed[C] * 25);
+    //sets target positions
+    stepperA.moveTo(pos[A]);
+    stepperB.moveTo(pos[B]);
+    stepperC.moveTo(pos[C]);
+    //runs stepper to target position (increments at most 1 step per call)
+    stepperA.run();
+    stepperB.run();
+    stepperC.run();
   }
-
-  int x_mm = 0, y_mm = 0;
-  getBallPosition(x_mm, y_mm);
-  if (x_mm == 0 && y_mm == 0) return;
-
-  float errorX = (SCREEN_WIDTH_MM / 2.0) - x_mm;
-  float errorY = (SCREEN_HEIGHT_MM / 2.0) - y_mm;
-
-  unsigned long now = millis();
-  float dt = (now - lastTime) / 1000.0;
-  lastTime = now;
-
-  float tiltX = computePID(errorX, lastErrorX, integralX, dt);
-  float tiltY = computePID(errorY, lastErrorY, integralY, dt);
-
-  tiltX = constrain(tiltX, -30, 30);
-  tiltY = constrain(tiltY, -30, 30);
-
-  static unsigned long lastUpdate = 0;
-  if (millis() - lastUpdate > 100) {
-    computeInverseKinematics(tiltX, tiltY, motorTargets);
-    stepperA.moveTo(motorTargets[0]);
-    stepperB.moveTo(motorTargets[1]);
-    stepperC.moveTo(motorTargets[2]);
-    lastUpdate = millis();
-  }
-
-  stepperA.run();
-  stepperB.run();
-  stepperC.run();
-
-  Serial.print("Ball X: "); Serial.print(x_mm);
-  Serial.print(" | Y: "); Serial.print(y_mm);
-  Serial.print(" || Error X: "); Serial.print(errorX);
-  Serial.print(" | Error Y: "); Serial.print(errorY);
-  Serial.print(" || PID X: "); Serial.print(tiltX);
-  Serial.print(" | PID Y: "); Serial.println(tiltY);
-  Serial.print("Target A: "); Serial.print(motorTargets[0]);
-  Serial.print(" | B: "); Serial.print(motorTargets[1]);
-  Serial.print(" | C: "); Serial.println(motorTargets[2]);
-
- // delay(10);
-}
-
-void getBallPosition(int &x_mm, int &y_mm) {
-  TSPoint p = ts.getPoint();
-  pinMode(XP, OUTPUT); pinMode(XM, OUTPUT); pinMode(YP, OUTPUT); pinMode(YM, OUTPUT);
-  if (p.z > 10) {
-    x_mm = map(p.x, TS_MINX, TS_MAXX, 0, SCREEN_WIDTH_MM);
-    y_mm = map(p.y, TS_MINY, TS_MAXY, 0, SCREEN_HEIGHT_MM);
-  } else {
-    x_mm = 0;
-    y_mm = 0;
+  //if the hasn't been detected
+  else {
+    for (int i = 0; i < 3; i++) {
+      pos[i] = round((angOrig - machine.theta(i, hz, 0, 0)) * angToStep);
+    }
+    //sets max speed
+    stepperA.setMaxSpeed(800);
+    stepperB.setMaxSpeed(800);
+    stepperC.setMaxSpeed(800);
+    //moves the stepper motors
+    steppers.moveTo(pos);
+    steppers.run();  //runs stepper to target position (increments at most 1 step per call)
   }
 }
-
-float computePID(float error, float &lastError, float &integral, float dt) {
-  integral += error * dt;
-  float derivative = (error - lastError) / dt;
-  lastError = error;
-  return (kp * error) + (ki * integral) + (kd * derivative);
-}
-
-void computeInverseKinematics(float tiltX, float tiltY, long targets[3]) {
-  const float cos60 = 0.5;
-  const float sin60 = 0.866;
-  float z1 = -cos60 * tiltX + sin60 * tiltY;
-  float z2 = tiltX;
-  float z3 = -cos60 * tiltX - sin60 * tiltY;
-  float scale = 30.0;
-  targets[0] = initialOffset[0] + z1 * scale;
-  targets[1] = initialOffset[1] + z2 * scale;
-  targets[2] = initialOffset[2] + z3 * scale;
+//takes in an X and Y setpoint/position and moves the ball to that position
+void PID(double setpointX, double setpointY) {
+  TSPoint p = ts.getPoint();  //measure X and Y positions
+  //if the ball is detected (the x position will not be 0)
+  if (p.x != 0) {
+    detected = 1;
+    //calculates PID values
+    for (int i = 0; i < 2; i++) {
+      errorPrev[i] = error[i];                                                                     //sets previous error
+      error[i] = (i == 0) * (Xoffset - p.x - setpointX) + (i == 1) * (Yoffset - p.y - setpointY);  //sets error aka X or Y ball position
+      integr[i] += error[i] + errorPrev[i];                                                        //calculates the integral of the error (proportional but not equal to the true integral of the error)
+      deriv[i] = error[i] - errorPrev[i];                                                          //calcuates the derivative of the error (proportional but not equal to the true derivative of the error)
+      deriv[i] = isnan(deriv[i]) || isinf(deriv[i]) ? 0 : deriv[i];                                //checks if the derivative is a real number or infinite
+      out[i] = kp * error[i] + ki * integr[i] + kd * deriv[i];                                     //sets output
+      out[i] = constrain(out[i], -0.25, 0.25);                                                     //contrains output to have a magnitude of 0.25
+    }
+    //calculates stepper motor speeds
+    for (int i = 0; i < 3; i++) {
+      speedPrev[i] = speed[i];                                                                                                           //sets previous speed
+      speed[i] = (i == A) * stepperA.currentPosition() + (i == B) * stepperB.currentPosition() + (i == C) * stepperC.currentPosition();  //sets current position
+      speed[i] = abs(speed[i] - pos[i]) * ks;                                                                                            //calculates the error in the current position and target position
+      speed[i] = constrain(speed[i], speedPrev[i] - 200, speedPrev[i] + 200);                                                            //filters speed by preventing it from beign over 100 away from last speed
+      speed[i] = constrain(speed[i], 0, 1000);                                                                                           //constrains sped from 0 to 1000
+    }
+    Serial.println((String) "X OUT = " + out[0] + "   Y OUT = " + out[1] + "   Speed A: " + speed[A]);  //print X and Y outputs
+  }
+  //if the ball is not detected (the x value will be 0)
+  else {
+    //double check that there is no ball
+    delay(10);                  //10 millis delay before another reading
+    TSPoint p = ts.getPoint();  //measure X and Y positions again to confirm no ball
+    if (p.x == 0) {             //if the ball is still not detected
+      //Serial.println("BALL NOT DETECTED");
+      detected = 0;
+    }
+  }
+  //continues moving platforma and waits until 20 millis has elapsed
+  timeI = millis();
+  while (millis() - timeI < 20) {
+    moveTo(4.25, -out[0], -out[1]);  //moves the platfrom
+  }
 }
